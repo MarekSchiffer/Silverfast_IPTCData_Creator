@@ -60,6 +60,7 @@
 " between the <IPTCObject> and </IPTCObject>.
 " Finally we save the file, necessary in order to return back to the previous
 " buffer and finally jump back to the mark.
+" buffer and finally jump back to the mark.
 
 function! NameSubstitution()
 	normal! ma
@@ -135,18 +136,47 @@ function! CaptionSubstitution()
 endfunction
 
 "Sub() is a subfunction, which starts on a Keyword. We go down to the next
-"Keyword, yank the whole line, including the 64 spaces. Then we mark our
-"spot, go to the next buffer and look for IPTCKeywords. Paste in the Keyword
-"and substitute the spaces with %20. Finally we combine the two lines and
-"remove the extra space before we go back to the beginning of the file.
-"Finally we save the file, go back to the input file and return to our mark.
+"Keyword, yank the whole line.
+"In the following we are taking care of the necessary 64 character that
+"Silverfast requires. In order to do that, we go to the top of the file,
+"paste the keyword and go to the end of the line. Next we read out the cursor
+"position. If the x Position or the column is smaller than 64 characters, we
+"simply append the necessary whitespaces. If the line containing the keyword
+"is greater than 64 characters, we simply cut it at the 64 character mark.
+"Hence 0 has a different meaning in vim, we have to consider the case of 64 
+"separately and simply leave the line as it is.
+"In all three cases the line gets yanked and deleted. At the moment we don't
+"use the u yank but rather the default yank, which is included in the dd.
+"
+"In every case we now have a line with the keyword in it, which has exactly 64 
+"characters. Next up we go to the next buffer, find the location IPTCKeywords.
+"Afterwords we go down one line to the previous inserted keywords and then
+"paste the yanked line from our inputfile. Afterwards we substitute our
+"whitespaces with %20 and combine the two lines to one, which leaves us
+"at the correct position to repeat the process.
 
 function! Sub()
 	execute "normal! j0y$0"
 	normal mb
+	execute "normal! ggO\<esc>P$"
+	let save_cursor = getcurpos()
+	if save_cursor[2] < 64
+		let xShift = 64-save_cursor[2]
+		execute	"normal! ".xShift."a "
+		normal! 0"uy$dd
+		echo xShift
+	elseif save_cursor[2] > 64
+		:call cursor(1,64)	
+		execute "normal! ld$"
+		normal! 0"uy$dd
+	elseif save_cursor[2] == 64
+		normal! 0"uy$dd
+	endif
+	:w
 	:bn
 	/IPTCKeywords
-	execute "normal! jo\<esc>p0"
+	"execute "normal! jo\<esc>p0"
+	execute "normal! jp0"
 	:s / /%20/g
 	execute "normal! kJxgg"
 	:w
@@ -154,22 +184,56 @@ function! Sub()
 	execute "normal! 'b"
 endfunction
 
-"This function is another example of a quick and dirty solution. In order to
-"make the process work, the number of Keywords has to be given in the input-
-"file and as you can see, it acts as a condition for the while loop.
+" In Silverfast the Keywords in the line /IPTCKeywords must correspond exactly
+" to the number given by /IPTCKeywordCount in the IPTC file. Here we extract the
+" number of keywords from the IPTC_Template, so in can vary.
+" We simply go into the IPTC_Template file in the next buffer, or the copy
+" saved under a different name to be exact, and copy the number under
+" /IPTCKeywordCount without the %20 at the end.
 "
-"The first thing we do, is to go extract the number behind the word
-"KeywordCount and place it in register h ("h). To work with it, we address it
-"to variable var. Next we set c to 1 and search for Keywords.
+function! ExtractKeywordnumber()
+	normal mp
+	:bn
+	/IPTCKeywordCount
+	execute "normal! jwywgg"
+	:bf
+	let Keywords_In_Templete= @"
+	execute "normal! `p"
+	return Keywords_In_Templete
+endfunction
+
+"The previous process of having to give the numbers of Keywords separately
+"seems convoluted so we will now start to count the Keywords. In order for it
+"to work, the Keywords must be given under the name Keywords: and only after
+"the final Keyword there is a blank line required.
+"The function simply goes to the word Keywords and then to the next blank
+"line. Afterwards we simply calculate the difference.
+
+function! CountKeywords()
+	normal ma
+	/Keywords:
+	let save_cursorKeywords = getcurpos()
+	execute "normal! }k"
+	let save_cursorEndKeywords = getcurpos()
+	let number_of_Keywords = save_cursorEndKeywords[1]-save_cursorKeywords[1]
+	execute "normal! `a"
+	return number_of_Keywords
+endfunction
+
+"The function KeywordsSubstitution() will now use the subfunction Sub()
+"and add all the keywords given in the input file to the IPTC_Template.
+"First we use the function CountKeywords() to extract the number of keywords
+"already given in the IPTC_Template.
+"Next we set c to 1 and search for Keywords.
 "The courser will now be on Keywords, but the subfunction Sub() will go down
 "one, and therefore be on the first keyword. The while loop now continuously 
 "adds the keywords to the IPTC_Template file. At last we go back to our mark. 
 
 function! KeywordsSubstitution()
 	normal mz
-	/KeywordCount
-	normal f:w"hyw
-	let var=@h
+	let var = CountKeywords()
+	execute "normal! `z"
+"	let var=@h
 
 	let c=1
 	/Keywords
@@ -183,25 +247,18 @@ function! KeywordsSubstitution()
 endfunction	
 
 " Again Silverfast needs the amount of Keywords as well and in a very
-" particular way with a %20 at the end. Here we start by going to the
-" KeywordCount in our inputfile and copying the number into the h register.
-" Afterwards we assign the number to the variable var and add the starting
-" value of 2 to it.
-" NOTE: the vaule 2 has to correspond to two values in the IPTC_Template file.
-" If you want to change the number there you must also adjust the value 2
-" accordingly.
+" particular way with a %20 at the end. We start using the two previous
+" functions to extract the number of keywords already in the IPTC_Template and
+" by counting the to be added number of keywords in our inputfile.
 " Next we assign the result to the register q and switch to our IPTC_Template
 " in the next buffer. Finally we remove the previous entry and replace it with
 " the new one, including the obscure %20 at the end. Like always we save and
 " move back to the input file.
 
-
-function! KeywordCounter()
+function! KeywordNumberUpdate()
 	normal mf
-	/KeywordCount
-	normal f:w"hyw
-	let var=@h
-	let sta = 2
+	let sta = ExtractKeywordnumber()
+	let var = CountKeywords()
 	let var += sta 
 	let @q = var
 	:bn
@@ -222,8 +279,9 @@ endfunction
 " So we start by going to the name, and extracting the number of the film and
 " photo in registers 5 and 6 respectively.
 " Then we go on top of the file, write f insert register 5, write f again and
-" insert register 6. Finally we yank that word and delete it together with
-" the new created line.
+" insert register 6. Finally we yank that word in the t register and delete it
+" together with the new created line.
+
 
 function! CreateFilename()
 	normal! mf
@@ -242,10 +300,11 @@ function! CreateFilename()
 	:w
 endfunction	
 
+
 "Finally we wrap things up! 
 "The function is supposed to be called at the input file before the IPTC Data
 "for the next photo. We start by marking our spot and creating the filename.
-"The filename will now be in the standard register, so we assign it to the
+"The filename will now be in the t register, so we assign it to the
 "variable filename. All files will be saved in the home directory.
 "This has the simple advantage, that this is the folder were Silverfast opens
 "on default. Next up we add the IPTC_Template file to the next buffer.
@@ -255,7 +314,15 @@ endfunction
 "saved file and the IPTC_Template moved to buffer 3. Furthermore the active
 "buffer will be the last saved buffer 2.
 "So next we go back to the previous buffer, the input file, and back to our
-"mark. Now we can call all the functions, which will be applied to the next
+"mark.
+"At this point we added a little control to look if the file we want to create
+"already exists. In the previous version this let to a crash, since a file can't
+"be overwritten and the script would start changing the IPTC_Template which
+"at this point was useless.
+"Now we simply check if the file exists and fie a short message. 
+"NOTE: If the file exists it will not be overwritten. If you want to update
+"it, you must first delete it manually.
+"Now we can call all the functions, which will be applied to the next
 "buffer, which is the new file, not the IPTC_Template.
 "At the end will will still be on the input file - buffer 1 - and have to
 "close the other buffers in order to be able to repeat the process.
@@ -269,6 +336,12 @@ function! Wrap()
 	execute ':badd' . "/Users/schiffer/.vim/plugin/IPTC_Template/IPTC_Template"
 	:bn
 
+	 if  filereadable(name)
+		 echom "File ".name." already exits!"
+		 sleep 1000m
+		 redraw
+	 else
+
 	execute ':sav'. name 
 	:bp
 	execute "normal `w"
@@ -276,14 +349,12 @@ function! Wrap()
 	:call DateSubstitution() 
 	:call StateSubstitution()
 	:call CitySubstitution()
-	:call KeywordCounter()
+	:call KeywordNumberUpdate()
 	:call CaptionSubstitution()
 	:call KeywordsSubstitution()
 
+	 endif
 	:.+,$bwipeout
-"	:2,$-bdelete
-"	:bd 2
-"	:bd 3
 endfunction
 
 
@@ -295,6 +366,5 @@ endfunction
 "nnoremap <leader>k :call KeywordsSubstitution() <cr>
 "nnoremap <leader>h :call CreateFilename() <cr>
 "nnoremap <leader>z :call KeywordCounter() <cr>
-"nnoremap <leader>z :call Sub() <cr>
+"nnoremap <leader>z :call ExtractKeywordnumber() <cr>
 nnoremap <leader>w :call Wrap() <cr>
-
